@@ -1,20 +1,27 @@
-function fets = featureCalc()
+function featureCalc()
 
-addpath ~/Documents/git/CMBHOME/
-d{1} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Dog_1/';
-d{2} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Dog_2/';
-d{3} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Dog_3/';
-d{4} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Dog_4/';
-d{5} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Dog_5/';
-d{6} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Patient_2/';
-d{7} = '/Volumes/BillExternal/Kaggle/AmericanEpilepsySocietySeizurePredicationChallenge/Data/Patient_1/';
-
+addpath /media/wchapman/RatBrains/Insync/git/CMBHOME/
+if ~isunix
+    datapath = 'G:\';
+else
+    datapath = '/media/wchapman/RatBrains/';
+end
+d = cell(1,7);
+for i=1:7
+    d{i} = [datapath  'Kaggle' filesep 'AmericanEpilepsySocietySeizurePredicationChallenge' filesep 'Data' filesep 'Dog_' num2str(i) filesep];
+end
+for i=1:2
+    d{i+7} =  [datapath  'Kaggle' filesep 'AmericanEpilepsySocietySeizurePredicationChallenge' filesep 'Data' filesep 'Patient_' num2str(i) filesep];
+end
 
 SL(1).fname = 'nope';
 
 for i = 1:length(d)
     fls = dir(d{i});
-    fls = fls(4:end);
+    %     keyboard
+    %     fls = fls(4:end); Not super sure why this was 4, gonna just remove
+    %     files that start with .
+    fls = fls(cellfun(@(x)x(1),{fls.name})~='.');
     for k = 1:length(fls)
         SL(end+1).fname = [d{i} fls(k).name];
         SL(end).patientID = i;
@@ -27,7 +34,7 @@ for i = 1:length(d)
             SL(end).type = 'test';
         else
             error('Bad filename')
-        end        
+        end
     end
 end
 SL(1) = [];
@@ -35,58 +42,72 @@ SL = SL(:);
 SL(end).fets = [];
 
 %% Calculate Features:
-%parfor_progress(length(SL))
-bads = [];
 for i = 1:length(SL)
-    try
-        t=load(SL(i).fname);
-        z = fieldnames(t);
-        t = t.(z{1});
+    tic;
+    t=load(SL(i).fname);
+    z = fieldnames(t);
+    t = t.(z{1});
 
-        SL(i).fets = featureCalc(t.data, t.sampling_frequency);
-        %parfor_progress;
-        i
-    catch
-        bads = [bads i];
-        SL(i).fets = [];
-    end
+    featureCalc2(t.data, t.sampling_frequency, i);
+
+    disp(['Done with ' num2str(i) ':  ' num2str(toc*(i/length(SL))) ' remaining'])    
 end
-%parfor_progress(0);
-
-% saveit:
-save(['output' filesep 'SL.mat'], 'SL')
 
 end
 
 
-function subunc(x, fs)
-    % assumes each row in x is a channel, each column is a time point
-    fets(:,1) = mean(x, 2);
-    fets(:,2) = std(x,0,2);
-    fets(:,3) = skewness(x,1,2);
-    fets(:,4) = kurtosis(x,1,2);
+function fets = featureCalc2(x, fs, rownum)
+% assumes each row in x is a channel, each column is a time point
+
+    % TODO
     % long term energy
     % mse AR models
-    for k = 1:size(x,1)
-    d = x(k,:)';
-        % delta (0.1 - 0.4) (relative power)
-        theta{k} = CMBHOME.LFP.BandpassFilter(d, fs, [4 8]); % theta (4-8)
-        alpha{k} = CMBHOME.LFP.BandpassFilter(d, fs, [8 15]); % theta (8-15)
-        beta{k} = CMBHOME.LFP.BandpassFilter(d, fs, [15 30]); % theta (15-30)
-        gamma{k} = CMBHOME.LFP.BandpassFilter(d, fs, [30 100]); % theta (30-200)
-        pow(k) = mean(d.^2);
-        
-        rp = [mean(theta{k}.^2) mean(alpha{k}.^2) mean(beta{k}.^2) mean(gamma{k}.^2)] / pow(k);
-        fets(k, 5:8) = rp;
-    end
 
-    % observation: cross correlations not modulated by theta, but
-    % autocorrelations are.
-    
     % spectral edge frequency
     % spectral edge power
     % decorrelation time
     % Hjorth mobility
     % Hjorth complexity
     % energy of wavelet coefficients
+
+    fets.mean = mean(x, 2);
+    fets.std = std(x,0,2);
+    fets.skewness = skewness(x,1,2);
+    fets.kurtosis = kurtosis(x,1,2);
+
+
+    for j=1:size(x,1)
+        %% Jason 
+        nchunks = 5;% I think doing 5 chunks in time is probably a good bet.
+        freqs = 1:5:120; %1:2:120
+
+        spec = spectro(x(j,:), fs, freqs);
+        [fets.fr(j,:), fets.spike_freq{j}, fets.spike_angle{j}] = spikeCalcs(x(j,:), fs, freqs, nchunks, spec);
+        [fets.comod{j}, fets.comod_angle{j}, fets.covar_var_exp{j}] = PAC(x(j,:), fs, freqs, nchunks, spec);
+        %fets.spec{j} = spec;
+        %% Bill
+        d = x(j,:)';
+        theta = CMBHOME.LFP.BandpassFilter(d, fs, [4 8]); % theta (4-8)
+        alpha = CMBHOME.LFP.BandpassFilter(d, fs, [8 15]); % alpha (8-15)
+        beta = CMBHOME.LFP.BandpassFilter(d, fs, [15 30]); % beta (15-30)         
+        gamma = CMBHOME.LFP.BandpassFilter(d, fs, [30 100]); % gamma (30-200)
+        pow = mean(d.^2);
+
+        fets.rp_theta(j) = mean(theta.^2) / pow;
+        fets.rp_alpha(j) = mean(alpha.^2) / pow;
+        fets.rp_beta(j) = mean(beta.^2) / pow;
+        fets.rp_gamma(j) = mean(gamma.^2) / pow;
+        fets.power(j) = pow;
+    end
+ 
+    for i = 1:size(x,1)
+        for j = 1:size(x,1)
+            c = corrcoef(x(i,:),x(j,:));
+            cc(i,j) = c(1,2);
+        end
+    end
+    
+    fets.corrcoef = cc;
+    save(['output' filesep 'SL_' num2str(rownum) '.mat'], 'fets'); %save each one in case of crash ... 
+
 end
